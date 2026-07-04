@@ -1,0 +1,11 @@
+[build]
+# Windows: 使用 msvc 链接器（默认）
+# Linux: 如需 musl 静态链接，取消下方注释
+# rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# 构建时环境变量（不影响运行时）
+# SEA_EMBED_CONFIG = "1"

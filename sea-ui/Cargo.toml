@@ -1,0 +1,20 @@
+[package]
+name = "sea-ui"
+version = "0.1.0"
+edition = "2024"
+description = "SEA TUI — 终端交互界面，参考 Peri 设计语言"
+
+[dependencies]
+sea-common  = { path = "../sea-common" }
+ratatui     = { version = "0.30", features = ["unstable-rendered-line-info", "unstable-widget-ref"] }
+crossterm   = { version = "0.28", features = ["event-stream"] }
+tokio       = { workspace = true }
+futures     = "0.3"
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+anyhow      = { workspace = true }
+uuid        = { workspace = true }
+unicode-width = "0.2"

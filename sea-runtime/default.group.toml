@@ -1,0 +1,75 @@
+[group]
+name = "self-evolving"
+version = "0.1.0"
+
+# ── UI 节点（内置） ──
+[node.ui]
+description = "终端交互界面"
+inputs  = [{ port = "in",  format = "text/markdown" }]
+outputs = [{ port = "out", format = "text/plain" }]
+[node.ui.runtime]
+kind = "builtin"
+function = "ui_run"
+
+# ── 核心推理引擎（LLM） ──
+[node.agent-core]
+description = "核心推理引擎，理解用户意图，调度子节点，生成自演进提案"
+inputs  = [
+    { port = "in",     format = "text/plain" },
+    { port = "result", format = "application/json" },
+]
+outputs = [
+    { port = "out",      format = "text/markdown" },
+    { port = "call",     format = "application/json" },
+    { port = "register", format = "application/json" },
+]
+[node.agent-core.runtime]
+kind = "llm"
+model = "${SEA_MODEL}"
+system_prompt = "你是 SEA CLI 的核心助手（Supervisor）。"
+
+# ── 消息路由（内置） ──
+[node.router]
+description = "消息调度中心，根据请求中的目标和能力描述路由到子节点"
+inputs  = [{ port = "in",  format = "application/json" }]
+outputs = [{ port = "out", format = "application/json" },
+           { port = "error", format = "application/json" }]
+[node.router.runtime]
+kind = "builtin"
+function = "router_dispatch"
+
+# ── 自演进管理（内置） ──
+[node.admin]
+description = "自演进控制阀门，接收提案，校验，触发增量更新"
+inputs  = [{ port = "in",  format = "application/json" }]
+outputs = [{ port = "out", format = "application/json" }]
+[node.admin.runtime]
+kind = "builtin"
+function = "admin_run"
+
+# ── 节点目录（内置） ──
+[node.registry]
+description = "节点目录，存储所有节点的 id、description、ports"
+inputs  = [{ port = "in",  format = "application/json" },
+           { port = "query", format = "application/json" }]
+outputs = [{ port = "out", format = "application/json" }]
+[node.registry.runtime]
+kind = "builtin"
+function = "registry_run"
+
+# ── 通道拓扑 ──
+[channels]
+# 对话主通道
+"ui:out"                   = ["agent-core:in"]
+"agent-core:out"           = ["ui:in"]
+
+# 节点调用
+"agent-core:call"          = ["router:in"]
+
+# 自演进闭环
+"agent-core:register"      = ["admin:in"]
+"admin:out"                = ["registry:in"]
+"registry:out"             = ["agent-core:result"]
+
+# 路由错误返回
+"router:error"             = ["agent-core:result"]

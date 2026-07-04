@@ -1,0 +1,96 @@
+# SEA CLI 默认节点配置 (.group.toml)
+# 编译时通过 include_str! 嵌入二进制。
+#
+# 核心节点全部为 builtin（in_process tokio task），
+# 工具节点为 python（separate_process 子进程 + bridge）。
+#
+# 格式遵循 IFP v3.1 规范。
+
+# ── 版本 ──
+version = "0.1.0"
+description = "SEA CLI — 自演进对话式 CLI"
+
+# ── 节点定义 ──
+[node.ui]
+description = "终端交互界面"
+inputs  = [{ port = "in",   format = "text/markdown" }]
+outputs = [{ port = "out",  format = "text/plain" }]
+[node.ui.runtime]
+kind    = "builtin"
+
+[node.agent-core]
+description = "Supervisor LLM 推理引擎，负责回复用户、调用子节点、提出自演进提案"
+inputs  = [{ port = "in", format = "text/plain" }]
+outputs = [
+    { port = "out", format = "text/markdown" },
+    { port = "call", format = "application/json" },
+    { port = "register", format = "application/json" },
+]
+[node.agent-core.runtime]
+kind    = "llm"
+
+[node.router]
+description = "无状态消息调度器，按 target/capability 匹配目标节点并路由消息"
+inputs  = [{ port = "in", format = "application/json" }]
+outputs = [
+    { port = "out", format = "application/json" },
+    { port = "error", format = "application/json" },
+]
+[node.router.runtime]
+kind    = "builtin"
+
+[node.admin]
+description = "自演进管理，接收提案、校验约束、触发 spawn/terminate、持久化配置"
+inputs  = [{ port = "in",   format = "application/json" }]
+outputs = [{ port = "out",  format = "application/json" }]
+[node.admin.runtime]
+kind    = "builtin"
+
+[node.registry]
+description = "节点目录服务，存储所有节点的 id/description/ports（外部三要素）"
+inputs  = [{ port = "in",   format = "application/json" }]
+outputs = [{ port = "out",  format = "application/json" }]
+[node.registry.runtime]
+kind    = "builtin"
+
+[node.file_rw]
+description = "文件读写操作，限定工作区目录"
+inputs  = [{ port = "in",   format = "application/json" }]
+outputs = [{ port = "out",  format = "application/json" }]
+[node.file_rw.runtime]
+kind    = "python"
+command = "python"
+args    = ["tools/file_rw.py"]
+
+[node.shell_exec]
+description = "Shell 命令执行，沙箱环境"
+inputs  = [{ port = "in",   format = "application/json" }]
+outputs = [{ port = "out",  format = "text/plain" }]
+[node.shell_exec.runtime]
+kind    = "python"
+command = "python"
+args    = ["tools/shell_exec.py"]
+
+[node.web_fetch]
+description = "网络请求（HTTP GET），返回响应内容"
+inputs  = [{ port = "in",   format = "application/json" }]
+outputs = [{ port = "out",  format = "text/plain" }]
+[node.web_fetch.runtime]
+kind    = "python"
+command = "python"
+args    = ["tools/web_fetch.py"]
+
+# ── 通道拓扑 ──
+# 格式：source = ["target1", "target2"]
+# 注意：每个 source 格式为 "node_id:port"
+[channels]
+"ui:out"              = ["agent-core:in"]
+"agent-core:out"      = ["ui:in"]
+"agent-core:call"     = ["router:in"]
+"agent-core:register" = ["admin:in"]
+"admin:out"           = ["registry:in"]
+"router:out"          = ["file_rw:in", "shell_exec:in", "web_fetch:in"]
+"file_rw:out"         = ["agent-core:result"]
+"shell_exec:out"      = ["agent-core:result"]
+"web_fetch:out"       = ["agent-core:result"]
+"router:error"        = ["agent-core:result"]

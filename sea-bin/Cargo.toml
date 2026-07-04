@@ -1,0 +1,22 @@
+[package]
+name = "sea"
+version.workspace = true
+edition.workspace = true
+description = "SEA CLI — 自演进对话式终端"
+
+[[bin]]
+name = "sea"
+path = "src/main.rs"
+
+[dependencies]
+sea-runtime = { path = "../sea-runtime" }
+sea-common  = { path = "../sea-common" }
+sea-ui      = { path = "../sea-ui" }
+tokio       = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+serde_json  = { workspace = true }
+serde       = { workspace = true }
+clap        = { version = "4", features = ["derive"] }
+dotenvy     = "0.15"
