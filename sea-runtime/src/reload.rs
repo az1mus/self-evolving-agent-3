@@ -203,6 +203,7 @@ fn find_node_def(current_nodes: &[NodeInfo], id: &str) -> Option<NodeDef> {
     Some(NodeDef {
         id: info.id.clone(),
         description: info.description.clone(),
+        api_docs: info.api_docs.clone(),
         inputs: info.inputs.clone(),
         outputs: info.outputs.clone(),
         runtime: sea_common::RuntimeDef::skill(""), // 占位，runtime 差异在 update 时不敏感
@@ -211,10 +212,14 @@ fn find_node_def(current_nodes: &[NodeInfo], id: &str) -> Option<NodeDef> {
     })
 }
 
-/// 检测两个 NodeDef 是否有实质性差异（id/description/ports）。
+/// 检测两个 NodeDef 是否有实质性差异（id/description/api_docs/ports）。
 fn node_def_changed(old: &NodeDef, new: &NodeDef) -> bool {
     // 描述变更
     if old.description != new.description {
+        return true;
+    }
+    // API 文档变更
+    if old.api_docs != new.api_docs {
         return true;
     }
     // 端口定义变更
@@ -305,6 +310,7 @@ async fn execute_update(
         .register(NodeInfo::with_ports(
             node_id,
             &new_def.description,
+            new_def.api_docs.as_deref(),
             new_def.inputs.clone(),
             new_def.outputs.clone(),
         ))
@@ -329,6 +335,7 @@ async fn execute_add(
         .register(NodeInfo::with_ports(
             node_id,
             &new_def.description,
+            new_def.api_docs.as_deref(),
             new_def.inputs.clone(),
             new_def.outputs.clone(),
         ))

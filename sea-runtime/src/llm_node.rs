@@ -261,8 +261,9 @@ impl AgentCore {
         // 构建 system prompt
         let system_prompt = build_system_prompt(&registry_summary);
 
-        // 构建消息列表
+        // 构建消息列表（system 在最前面）
         let mut messages: Vec<LlmMessage> = Vec::new();
+        messages.push(LlmMessage::system(&system_prompt));
 
         // 添加历史消息
         for entry in &self.history {
@@ -270,24 +271,34 @@ impl AgentCore {
         }
 
         // 如果历史为空，添加一条占位消息
-        if messages.is_empty() {
+        if self.history.is_empty() {
             messages.push(LlmMessage::user("你好"));
         }
 
         // 构建 LLM 请求
         let request = LlmRequest::new(&self.llm_config.model)
-            .with_system(&system_prompt)
             .with_messages(messages);
 
-        // 序列化请求
+        // 序列化请求（OpenAI Chat Completions 标准格式：system 在 messages 中作为首条消息）
         let request_body = serde_json::json!({
             "model": request.model,
             "messages": request.messages,
-            "system": request.system,
             "temperature": 0.7,
             "max_tokens": 4096,
             "stream": false,
         });
+
+        // 调试日志: 输出发送给 LLM 的消息
+        tracing::info!(
+            "[agent-core] >>> LLM 请求 | model={} | messages={} | system_prompt_len={} | history_len={}",
+            request.model,
+            request.messages.len(),
+            system_prompt.len(),
+            self.history.len(),
+        );
+        // 输出 system prompt 前 800 字符（验证 api_docs 是否注入）
+        let preview: String = system_prompt.chars().take(800).collect();
+        tracing::info!("[agent-core] >>> system prompt 预览:\n{}", preview);
 
         // 调用 LLM API
         let response = self
@@ -323,6 +334,15 @@ impl AgentCore {
             .map(|c| c.message.content.clone())
             .unwrap_or_default();
 
+        // 调试日志: LLM 响应摘要
+        tracing::info!(
+            "[agent-core] <<< LLM 响应 | content_len={} | tokens(prompt={:?}, completion={:?}) | finish={:?}",
+            content.len(),
+            llm_response.usage.as_ref().map(|u| u.prompt_tokens),
+            llm_response.usage.as_ref().map(|u| u.completion_tokens),
+            llm_response.choices.first().map(|c| c.finish_reason.as_deref().unwrap_or("?")),
+        );
+
         Ok(content)
     }
 }
@@ -339,15 +359,22 @@ fn build_system_prompt(registry_summary: &str) -> String {
 2. 调用节点完成子任务（通过发出 JSON 调用请求）
 3. 当现有节点无法满足需求时，**提出自演进提案**
 
-## 调用节点
-如果需要调用节点，使用 XML 格式：
+## 如何调用节点
+每个节点的"支持的操作"部分列出了该节点可接受的 action 及其参数和返回值。
+
+调用格式（使用 XML 标签，精确指定目标节点）：
 <action type="call">
-{{"target": "节点 id", "payload": {{ ... }}}}
+{{"target": "节点 id", "payload": {{"action": "操作名", "参数名": "参数值"}}}}
 </action>
 
-或者按能力描述匹配：
+或者按能力描述模糊匹配（Router 将自动选择最相关的节点）：
 <action type="call">
-{{"capability": "能力描述", "payload": {{ ... }}}}
+{{"capability": "能力描述", "payload": {{"action": "操作名", "参数名": "参数值"}}}}
+</action>
+
+**调用示例**（读取文件内容）：
+<action type="call">
+{{"target": "file_rw", "payload": {{"action": "read", "path": "/workspace/foo.txt"}}}}
 </action>
 
 ## 自演进提案
@@ -369,7 +396,7 @@ fn build_system_prompt(registry_summary: &str) -> String {
 
 ## 输出规范
 - 普通回复直接输出文本
-- 需要调用节点时使用 <action type="call"> XML 标签
+- 需要调用节点时使用 <action type="call"> XML 标签，payload 内容遵循目标节点"支持的操作"中列出的格式
 - 需要自演进时使用 <action type="register"> XML 标签"#,
         registry_summary
     )

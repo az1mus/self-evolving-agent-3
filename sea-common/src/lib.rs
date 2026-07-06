@@ -161,12 +161,12 @@ mod tests {
     #[test]
     fn test_node_def_and_info() {
         let node =
-            NodeDef::new("file_rw", "文件读写操作", RuntimeDef::python("python", vec!["file_rw.py".to_string()]));
+            NodeDef::new("file_rw", "文件读写操作", None, RuntimeDef::python("python", vec!["file_rw.py".to_string()]));
         assert_eq!(node.id, "file_rw");
         assert_eq!(node.runtime.kind, RuntimeKind::Python);
         assert!(node.runtime.is_separate_process());
 
-        let info = NodeInfo::new("file_rw", "文件读写操作");
+        let info = NodeInfo::new("file_rw", "文件读写操作", None);
         assert_eq!(info.id, "file_rw");
     }
 }

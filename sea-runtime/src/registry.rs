@@ -78,7 +78,7 @@ impl Registry {
         catalog.values().cloned().collect()
     }
 
-    /// 生成供 LLM 注入的文本摘要。
+    /// 生成供 LLM 注入的文本摘要（含 API 文档）。
     pub async fn generate_summary(&self) -> String {
         let catalog = self.catalog.read().await;
         if catalog.is_empty() {
@@ -107,6 +107,18 @@ impl Registry {
                     "- `{}`: {} [in: {}] [out: {}]",
                     info.id, info.description, inputs_desc, outputs_desc
                 ));
+
+                // 追加 API 文档（如果有）
+                if let Some(ref docs) = info.api_docs {
+                    for doc_line in docs.lines() {
+                        let trimmed = doc_line.trim();
+                        if !trimmed.is_empty() {
+                            lines.push(format!("  {}", trimmed));
+                        } else {
+                            lines.push(String::new());
+                        }
+                    }
+                }
             }
         }
 

@@ -156,6 +156,7 @@ impl Admin {
                 let node_info = NodeInfo::with_ports(
                     &node_id,
                     &node.description,
+                    node.api_docs.as_deref(),
                     node.inputs.clone(),
                     node.outputs.clone(),
                 );

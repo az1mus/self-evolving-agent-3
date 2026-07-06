@@ -55,6 +55,16 @@ kind    = "builtin"
 
 [node.file_rw]
 description = "文件读写操作，限定工作区目录"
+api_docs = """
+支持的操作:
+  action: read  → {"action":"read", "path":"相对路径"}
+    返回: {"status":"ok","content":"文件内容"} 或 {"status":"error","error":"错误信息"}
+  action: write → {"action":"write", "path":"相对路径", "content":"写入内容"}
+    返回: {"status":"ok"} 或 {"status":"error","error":"错误信息"}
+  action: list  → {"action":"list", "path":"目录路径"}
+    返回: {"status":"ok","files":["f1","f2"]} 或 {"status":"error","error":"错误信息"}
+调用示例: {"target": "file_rw", "payload": {"action": "read", "path": "/workspace/foo.txt"}}
+"""
 inputs  = [{ port = "in",   format = "application/json" }]
 outputs = [{ port = "out",  format = "application/json" }]
 [node.file_rw.runtime]
@@ -64,6 +74,13 @@ args    = ["tools/file_rw.py"]
 
 [node.shell_exec]
 description = "Shell 命令执行，沙箱环境"
+api_docs = """
+支持的操作:
+  action: exec → {"action":"exec", "command":"echo hello", "timeout_ms":10000, "work_dir":"."}
+    返回: {"status":"ok","stdout":"...","stderr":"...","exit_code":0,"duration_ms":123}
+    或: {"status":"error","error":"错误信息"}
+调用示例: {"target": "shell_exec", "payload": {"action": "exec", "command": "echo hello"}}
+"""
 inputs  = [{ port = "in",   format = "application/json" }]
 outputs = [{ port = "out",  format = "text/plain" }]
 [node.shell_exec.runtime]
@@ -73,6 +90,13 @@ args    = ["tools/shell_exec.py"]
 
 [node.web_fetch]
 description = "网络请求（HTTP GET），返回响应内容"
+api_docs = """
+支持的操作:
+  action: fetch → {"action":"fetch", "url":"https://example.com", "timeout_ms":15000, "headers":{"Accept":"text/plain"}}
+    返回: {"status":"ok","status_code":200,"content_type":"...","content":"...","size":1234}
+    或: {"status":"error","error":"错误信息"}
+调用示例: {"target": "web_fetch", "payload": {"action": "fetch", "url": "https://example.com"}}
+"""
 inputs  = [{ port = "in",   format = "application/json" }]
 outputs = [{ port = "out",  format = "text/plain" }]
 [node.web_fetch.runtime]

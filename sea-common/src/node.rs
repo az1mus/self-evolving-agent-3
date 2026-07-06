@@ -215,16 +215,22 @@ impl Default for IsolationMode {
 pub struct NodeInfo {
     pub id: String,
     pub description: String,
+
+    /// 节点 API 文档（Markdown），描述该节点支持的动作、参数和返回值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_docs: Option<String>,
+
     pub inputs: Vec<PortDecl>,
     pub outputs: Vec<PortDecl>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl NodeInfo {
-    pub fn new(id: &str, description: &str) -> Self {
+    pub fn new(id: &str, description: &str, api_docs: Option<&str>) -> Self {
         Self {
             id: id.to_string(),
             description: description.to_string(),
+            api_docs: api_docs.map(|s| s.to_string()),
             inputs: Vec::new(),
             outputs: Vec::new(),
             created_at: chrono::Utc::now(),
@@ -234,12 +240,14 @@ impl NodeInfo {
     pub fn with_ports(
         id: &str,
         description: &str,
+        api_docs: Option<&str>,
         inputs: Vec<PortDecl>,
         outputs: Vec<PortDecl>,
     ) -> Self {
         Self {
             id: id.to_string(),
             description: description.to_string(),
+            api_docs: api_docs.map(|s| s.to_string()),
             inputs,
             outputs,
             created_at: chrono::Utc::now(),
@@ -254,6 +262,10 @@ pub struct NodeDef {
 
     #[serde(default)]
     pub description: String,
+
+    /// 节点 API 文档（Markdown），描述该节点支持的动作、参数和返回值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_docs: Option<String>,
 
     #[serde(default)]
     pub inputs: Vec<PortDecl>,
@@ -273,10 +285,11 @@ pub struct NodeDef {
 }
 
 impl NodeDef {
-    pub fn new(id: &str, description: &str, runtime: RuntimeDef) -> Self {
+    pub fn new(id: &str, description: &str, api_docs: Option<&str>, runtime: RuntimeDef) -> Self {
         Self {
             id: id.to_string(),
             description: description.to_string(),
+            api_docs: api_docs.map(|s| s.to_string()),
             inputs: Vec::new(),
             outputs: Vec::new(),
             runtime,
@@ -288,6 +301,7 @@ impl NodeDef {
     pub fn with_ports(
         id: &str,
         description: &str,
+        api_docs: Option<&str>,
         runtime: RuntimeDef,
         inputs: Vec<PortDecl>,
         outputs: Vec<PortDecl>,
@@ -295,6 +309,7 @@ impl NodeDef {
         Self {
             id: id.to_string(),
             description: description.to_string(),
+            api_docs: api_docs.map(|s| s.to_string()),
             inputs,
             outputs,
             runtime,

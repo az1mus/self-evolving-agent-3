@@ -192,6 +192,7 @@ pub async fn bootstrap_runtime(config: GroupConfig) -> sea_common::SeaResult<IFP
         let node_info = sea_common::NodeInfo::with_ports(
             &node_def.id,
             &node_def.description,
+            node_def.api_docs.as_deref(),
             node_def.inputs.clone(),
             node_def.outputs.clone(),
         );

@@ -172,6 +172,7 @@ impl NodeManager {
         let _node_info = NodeInfo::with_ports(
             &node_id,
             &node_def.description,
+            node_def.api_docs.as_deref(),
             node_def.inputs.clone(),
             node_def.outputs.clone(),
         );

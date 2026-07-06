@@ -57,6 +57,10 @@ pub struct NodeTomlDef {
     #[serde(default)]
     pub description: String,
 
+    /// 多行 API 文档 (Markdown)，描述该节点支持的动作、参数和返回值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_docs: Option<String>,
+
     #[serde(default)]
     pub inputs: Vec<PortDecl>,
 
@@ -167,6 +171,7 @@ impl GroupConfig {
                 let mut node = NodeDef {
                     id: id.clone(),
                     description: toml_def.description.clone(),
+                    api_docs: toml_def.api_docs.clone(),
                     inputs: toml_def.inputs.clone(),
                     outputs: toml_def.outputs.clone(),
                     runtime,
@@ -434,5 +439,41 @@ kind = "invalid_kind"
 
         let result = GroupConfig::from_toml(toml_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_api_docs() {
+        let toml_str = r#"
+[node.file_rw]
+description = "文件读写操作"
+api_docs = "支持的操作:\n  read  — 读取文件内容"
+inputs  = [{ port = "in",  format = "application/json" }]
+outputs = [{ port = "out", format = "application/json" }]
+[node.file_rw.runtime]
+kind = "python"
+        "#;
+
+        let config = GroupConfig::from_toml(toml_str).unwrap();
+        let defs = config.to_node_defs();
+        let f = defs.iter().find(|n| n.id == "file_rw").unwrap();
+        assert!(f.api_docs.is_some());
+        assert!(f.api_docs.as_ref().unwrap().contains("read"));
+    }
+
+    #[test]
+    fn test_api_docs_optional() {
+        let toml_str = r#"
+[node.test]
+description = "test without api_docs"
+inputs  = [{ port = "in",  format = "application/json" }]
+outputs = [{ port = "out", format = "application/json" }]
+[node.test.runtime]
+kind = "skill"
+        "#;
+
+        let config = GroupConfig::from_toml(toml_str).unwrap();
+        let defs = config.to_node_defs();
+        let t = defs.iter().find(|n| n.id == "test").unwrap();
+        assert!(t.api_docs.is_none());
     }
 }
