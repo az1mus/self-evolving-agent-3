@@ -243,6 +243,32 @@ impl ChannelSwitch {
         Ok(())
     }
 
+    /// 精确投递：直接发送消息到指定目标端口的处理器。
+    ///
+    /// 不经过 source→targets 的通道拓扑，直接通过目标端口的 handler 投递。
+    /// 用于 Router 等需要精确控制消息目标的场景，避免广播到整组通道。
+    pub async fn send_to_target(&self, target: &str, message: Message) -> SeaResult<()> {
+        let handlers = self.target_handlers.read().await;
+        let tx_list = handlers
+            .get(target)
+            .ok_or_else(|| SeaError::NoRoute(format!("目标端口没有处理器: {target}")))?;
+
+        let content_preview = Self::message_preview(&message);
+        tracing::info!(
+            "[channel] * → {target}  |{}|  {}",
+            message.trace_id,
+            content_preview,
+        );
+
+        for tx in tx_list {
+            tx.send(message.clone())
+                .await
+                .map_err(|_| SeaError::NoRoute(format!("发送到 {target} 失败: 通道已关闭")))?;
+        }
+
+        Ok(())
+    }
+
     /// 异步发送（等待缓冲空位）。
     pub async fn send_async(&self, source: &str, message: Message) -> SeaResult<()> {
         let senders = self.senders.read().await;
@@ -405,6 +431,14 @@ impl DataPlane {
     /// 发送消息（便捷方法）。
     pub async fn send(&self, source: &str, message: Message) -> SeaResult<()> {
         self.channel_switch.send(source, message).await
+    }
+
+    /// 精确投递：直接发送到指定目标端口的处理器。
+    ///
+    /// 不经过 source 通道拓扑，而是通过目标端口的 handler 直接投递。
+    /// 解决 router:out 广播到所有已建立通道的问题。
+    pub async fn send_to_target(&self, target: &str, message: Message) -> SeaResult<()> {
+        self.channel_switch.send_to_target(target, message).await
     }
 
     /// 异步发送消息。

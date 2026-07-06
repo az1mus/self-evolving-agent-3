@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 use sea_common::{
-    NodeInfo, Proposal, ProposalOperation,
+    Message, NodeInfo, Proposal, ProposalOperation,
     ProposalResult, SeaError,
     MAX_NODES, MAX_LLM_NODES, MAX_PYTHON_NODES, PROTECTED_NODES,
 };
@@ -23,6 +23,8 @@ pub struct Admin {
     auto_approve: bool,
     /// kind 计数缓存: node_id -> kind
     kind_cache: RwLock<HashMap<String, String>>,
+    /// 输入通道接收端（admin:in）。
+    rx: Option<mpsc::Receiver<Message>>,
 }
 
 impl Admin {
@@ -38,6 +40,7 @@ impl Admin {
             data_plane,
             auto_approve,
             kind_cache: RwLock::new(HashMap::new()),
+            rx: None,
         }
     }
 
@@ -301,4 +304,200 @@ impl Admin {
         let cache = self.kind_cache.read().await;
         cache.values().filter(|v| *v == kind).count() as u32
     }
+
+    /// 绑定输入通道接收端。
+    pub fn bind_rx(&mut self, rx: mpsc::Receiver<Message>) {
+        self.rx = Some(rx);
+    }
+
+    /// 启动 Admin 主循环。
+    ///
+    /// 接收 `admin:in` 消息，解析为 Proposal，处理后将结果返回 `agent-core:result`。
+    /// 解析失败时也有 fallback 机制，保证不会让调用方（agent-core）空等。
+    pub async fn run(&mut self) {
+        let mut rx = self.rx.take().expect("Admin: 未绑定输入通道");
+
+        tracing::info!("[admin] 自演进管理已启动");
+
+        while let Some(msg) = rx.recv().await {
+            let trace_id = msg.trace_id.clone();
+
+            // 先尝试严格解析，失败则走 fallback 路径
+            let proposal_result = match msg.content_as_json() {
+                Ok(raw_value) => {
+                    // 路径 A: 严格反序列化为 Proposal
+                    match serde_json::from_value::<Proposal>(raw_value.clone()) {
+                        Ok(p) => {
+                            tracing::info!(
+                                "[admin] 收到提案: proposal_id={}, operation={:?}",
+                                p.proposal_id,
+                                p.operation,
+                            );
+                            // 自动设置 proposed_by（如果 LLM 未设置）
+                            let proposal = Proposal {
+                                proposed_by: if p.proposed_by.is_empty() {
+                                    "agent-core".to_string()
+                                } else {
+                                    p.proposed_by
+                                },
+                                ..p
+                            };
+                            self.process_proposal(proposal).await
+                        }
+                        Err(strict_err) => {
+                            // 路径 B: 严格解析失败，尝试宽松 fallback 解析
+                            tracing::warn!(
+                                "[admin] 严格提案解析失败，尝试 fallback: {strict_err}"
+                            );
+                            match try_parse_proposal_fallback(&raw_value) {
+                                Ok(proposal) => {
+                                    tracing::info!(
+                                        "[admin] fallback 解析成功: proposal_id={}, operation={:?}",
+                                        proposal.proposal_id,
+                                        proposal.operation,
+                                    );
+                                    self.process_proposal(proposal).await
+                                }
+                                Err(fallback_err) => {
+                                    tracing::error!(
+                                        "[admin] fallback 也失败: {fallback_err}，原始 JSON: {}",
+                                        raw_value.to_string().chars().take(300).collect::<String>(),
+                                    );
+                                    ProposalResult::error(
+                                        "unknown",
+                                        &format!("提案解析失败（严格+fallback 均失败）: {fallback_err}"),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[admin] 消息不是合法 JSON: {e}");
+                    ProposalResult::error("unknown", &format!("消息体不是合法 JSON: {e}"))
+                }
+            };
+
+            tracing::info!(
+                "[admin] 提案结果: status={:?}, node_id={:?}, error={:?}",
+                proposal_result.status,
+                proposal_result.node_id,
+                proposal_result.error,
+            );
+
+            // 始终返回结果，避免 agent-core 空等
+            let result_msg = Message::with_json(trace_id, &serde_json::json!(proposal_result));
+            let _ = self.data_plane.send("agent-core:result", result_msg).await;
+        }
+
+        tracing::info!("[admin] 自演进管理已停止");
+    }
+}
+
+/// 宽松的提案解析 fallback：当严格反序列化失败时，
+/// 从 JSON Value 中手动提取字段，并为缺失的字段填充默认值。
+fn try_parse_proposal_fallback(raw: &serde_json::Value) -> Result<Proposal, String> {
+    let obj = raw.as_object().ok_or_else(|| "根节点不是 JSON 对象".to_string())?;
+
+    let operation = obj
+        .get("operation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("add");
+    let proposal_id = obj
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("prop-fallback")
+        .to_string();
+    let proposed_by = obj
+        .get("proposed_by")
+        .and_then(|v| v.as_str())
+        .unwrap_or("agent-core")
+        .to_string();
+    let reason = obj
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let proposal_operation = match operation {
+        "update" => ProposalOperation::Update,
+        "remove" => ProposalOperation::Remove,
+        _ => ProposalOperation::Add,
+    };
+
+    // fallback 解析 node 字段：为 inputs/outputs 填充默认 port
+    let node = obj.get("node").and_then(|n| {
+        let mut node_obj = match n.as_object() {
+            Some(o) => o.clone(),
+            None => return None,
+        };
+
+        // 确保 inputs 中每个都有 port 字段
+        if let Some(inputs) = node_obj.get_mut("inputs") {
+            if let Some(arr) = inputs.as_array_mut() {
+                for item in arr.iter_mut() {
+                    if let Some(obj_item) = item.as_object_mut() {
+                        if !obj_item.contains_key("port") {
+                            obj_item.insert("port".to_string(), serde_json::json!("in"));
+                        }
+                        if !obj_item.contains_key("format") {
+                            obj_item.insert("format".to_string(), serde_json::json!("application/json"));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 确保 outputs 中每个都有 port 字段
+        if let Some(outputs) = node_obj.get_mut("outputs") {
+            if let Some(arr) = outputs.as_array_mut() {
+                for item in arr.iter_mut() {
+                    if let Some(obj_item) = item.as_object_mut() {
+                        if !obj_item.contains_key("port") {
+                            obj_item.insert("port".to_string(), serde_json::json!("out"));
+                        }
+                        if !obj_item.contains_key("format") {
+                            obj_item.insert("format".to_string(), serde_json::json!("application/json"));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 确保 runtime 字段存在
+        if !node_obj.contains_key("runtime") {
+            node_obj.insert(
+                "runtime".to_string(),
+                serde_json::json!({
+                    "kind": "python"
+                }),
+            );
+        }
+
+        // 尝试用修补后的值反序列化 NodeDef
+        let patched = serde_json::Value::Object(node_obj);
+        match serde_json::from_value::<sea_common::NodeDef>(patched) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                tracing::warn!("[admin] fallback node 解析仍失败: {e}");
+                None
+            }
+        }
+    });
+
+    let node_id = obj
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let proposal = Proposal {
+        proposal_id,
+        proposed_by,
+        operation: proposal_operation,
+        node,
+        node_id,
+        changes: None,
+        reason,
+    };
+
+    Ok(proposal)
 }

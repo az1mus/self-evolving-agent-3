@@ -3,11 +3,13 @@ use tokio::sync::{mpsc, RwLock};
 
 use sea_common::GroupConfig;
 
+use crate::admin::Admin;
 use crate::control_plane::ControlPlane;
 use crate::data_plane::DataPlane;
 use crate::llm_node::{AgentCore, default_llm_config};
 use crate::node_manager::NodeManager;
 use crate::registry::Registry;
+use crate::router::Router;
 
 /// IFPRuntime 引用（Arc<RwLock<>> 包装）。
 pub type IFPRuntimeRef = Arc<RwLock<IFPRuntime>>;
@@ -17,7 +19,7 @@ pub type IFPRuntimeRef = Arc<RwLock<IFPRuntime>>;
 /// 遵循 IFP v3.1 规范，控制面/数据面分离，控制面不介入数据面原语的执行。
 pub struct IFPRuntime {
     pub config: Option<GroupConfig>,
-    pub node_manager: Option<NodeManager>,
+    pub node_manager: Option<Arc<NodeManager>>,
     pub control_plane: Option<ControlPlane>,
     pub data_plane: Option<Arc<DataPlane>>,
     pub registry: Option<Arc<Registry>>,
@@ -142,6 +144,20 @@ pub async fn bootstrap_runtime(config: GroupConfig) -> sea_common::SeaResult<IFP
         }
     }
 
+    // 5.5. 初始化 Router（带 LLM 配置，可选）并注册消息处理器
+    let router_llm_config = default_llm_config();
+    let router = Router::new(registry.clone(), data_plane.clone(), router_llm_config);
+    let (tx_router_in, rx_router_in) = mpsc::channel(256);
+    data_plane
+        .register_target_handler("router:in", tx_router_in)
+        .await?;
+    let mut router_instance = router;
+    router_instance.bind_rx(rx_router_in);
+    tokio::spawn(async move {
+        router_instance.run().await;
+    });
+    tracing::info!("[bootstrap] Router 已就绪");
+
     // 6. 建立通道拓扑（先于普通节点创建，但晚于 AgentCore 注册处理器）
     //    当通道目标为 "agent-core:in" 或 "agent-core:result" 时，
     //    通道交换机将使用已注册的处理器发送端。
@@ -169,14 +185,33 @@ pub async fn bootstrap_runtime(config: GroupConfig) -> sea_common::SeaResult<IFP
                 tracing::error!("[bootstrap] 节点启动失败: {e}");
             }
         }
-        nm
+        Arc::new(nm)
     };
     {
         let mut rt = runtime_ref.write().await;
-        rt.node_manager = Some(node_manager);
+        rt.node_manager = Some(node_manager.clone());
     }
 
-    // 7b. 绑定所有节点身份到控制面（供访问控制和审计使用）
+    // 7b. 初始化 Admin 并注册消息处理器（需要 NodeManager 已就绪）
+    let admin = Admin::new(
+        node_manager.clone(),
+        registry.clone(),
+        data_plane.clone(),
+        false, // auto_approve = false: 需要人工审批
+    );
+    let (tx_admin_in, rx_admin_in) = mpsc::channel(256);
+    // 使用 reconnect 模式：通道可能已在步骤 6 中创建（agent-core:register → admin:in）
+    data_plane
+        .register_handler_and_reconnect("admin:in", tx_admin_in)
+        .await?;
+    let mut admin_instance = admin;
+    admin_instance.bind_rx(rx_admin_in);
+    tokio::spawn(async move {
+        admin_instance.run().await;
+    });
+    tracing::info!("[bootstrap] Admin 已就绪");
+
+    // 7c. 绑定所有节点身份到控制面（供访问控制和审计使用）
     {
         let rt = runtime_ref.read().await;
         if let Some(cp) = &rt.control_plane {

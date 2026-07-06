@@ -30,7 +30,7 @@ outputs = [
 kind    = "llm"
 
 [node.router]
-description = "无状态消息调度器，按 target/capability 匹配目标节点并路由消息"
+description = "智能路由引擎，使用 LLM 分析请求并自动选择最合适的节点进行路由"
 inputs  = [{ port = "in", format = "application/json" }]
 outputs = [
     { port = "out", format = "application/json" },
@@ -113,7 +113,7 @@ args    = ["tools/web_fetch.py"]
 "agent-core:call"     = ["router:in"]
 "agent-core:register" = ["admin:in"]
 "admin:out"           = ["registry:in"]
-"router:out"          = ["file_rw:in", "shell_exec:in", "web_fetch:in"]
+# 结果返回（工具节点 → agent-core）
 "file_rw:out"         = ["agent-core:result"]
 "shell_exec:out"      = ["agent-core:result"]
 "web_fetch:out"       = ["agent-core:result"]

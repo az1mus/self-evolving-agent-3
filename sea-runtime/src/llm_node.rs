@@ -110,6 +110,133 @@ impl AgentCore {
         tracing::info!("[agent-core] 推理引擎已停止");
     }
 
+    /// 处理 LLM 响应文本：解析动作并依次执行。
+    ///
+    /// 注意：为防止 LLM 生成重复的 `<action type="call">` 导致重复发送，
+    /// 只执行第一个非 Reply 动作（Call 或 Register），后续非 Reply 动作将被跳过。
+    /// Reply 动作总是被正常处理。
+    async fn process_llm_response(
+        &mut self,
+        response_text: &str,
+        trace_id: String,
+    ) -> SeaResult<()> {
+        let parsed = parse_actions(response_text);
+        let mut action_executed = false; // 标记是否已执行过 Call/Register
+
+        // 先处理所有 Reply 动作
+        for action in &parsed.actions {
+            if let LlmAction::Reply { content } = action {
+                let reply = Message::with_markdown(trace_id.clone(), content);
+                self.data_plane.send("agent-core:out", reply).await?;
+                self.history.push(ConversationEntry::assistant(content));
+            }
+        }
+
+        // 处理非 Reply 动作（Call / Register），只执行第一个
+        for action in &parsed.actions {
+            match action {
+                LlmAction::Reply { .. } => {
+                    // 已在上方处理
+                }
+
+                LlmAction::Call {
+                    target,
+                    capability,
+                    payload,
+                } => {
+                    if action_executed {
+                        tracing::warn!(
+                            "[agent-core] 跳过重复的 Call 动作: target={:?}, capability={:?}",
+                            target,
+                            capability,
+                        );
+                        continue;
+                    }
+                    action_executed = true;
+
+                    let mut call_payload = serde_json::json!({
+                        "payload": payload,
+                    });
+                    if let Some(t) = target {
+                        call_payload["target"] = serde_json::json!(t);
+                    }
+                    if let Some(c) = capability {
+                        call_payload["capability"] = serde_json::json!(c);
+                    }
+
+                    let call_msg =
+                        Message::with_json(trace_id.clone(), &call_payload);
+
+                    self.data_plane
+                        .send("agent-core:call", call_msg)
+                        .await?;
+
+                    let target_desc = target
+                        .clone()
+                        .or_else(|| capability.clone())
+                        .unwrap_or_else(|| "未知节点".to_string());
+                    self.history.push(ConversationEntry::system(&format!(
+                        "【调用子节点】已向 {target_desc} 发出调用请求，等待结果..."
+                    )));
+
+                    // 回复 UI，避免 TUI 卡在 Loading 状态
+                    let ack = Message::with_markdown(
+                        trace_id.clone(),
+                        &format!("⏳ 已向 **{target_desc}** 发出调用请求，等待结果..."),
+                    );
+                    self.data_plane.send("agent-core:out", ack).await?;
+                }
+
+                LlmAction::Register { proposal } => {
+                    if action_executed {
+                        tracing::warn!(
+                            "[agent-core] 跳过重复的 Register 动作"
+                        );
+                        continue;
+                    }
+                    action_executed = true;
+
+                    let register_msg =
+                        Message::with_json(trace_id.clone(), proposal);
+
+                    self.data_plane
+                        .send("agent-core:register", register_msg)
+                        .await?;
+
+                    self.history.push(ConversationEntry::system(
+                        "【自演进提案】已发出，等待 admin 处理...",
+                    ));
+
+                    let ack = Message::with_markdown(
+                        trace_id.clone(),
+                        "⏳ **自演进提案**已发出，等待审批...",
+                    );
+                    self.data_plane.send("agent-core:out", ack).await?;
+                }
+            }
+        }
+
+        // 如果没有任何 Reply 动作被添加到 actions 中（可能是由于 XML 策略只提取了
+        // 动作标签），但 reply_text 中包含非动作文本，则将 reply_text 作为 Reply 发送。
+        let has_reply = parsed.actions.iter().any(|a| matches!(a, LlmAction::Reply { .. }));
+        if !has_reply {
+            if let Some(reply_text) = &parsed.reply_text {
+                let trimmed = reply_text.trim();
+                if !trimmed.is_empty() {
+                    tracing::debug!(
+                        "[agent-core] 将 reply_text 作为回复发送: len={}",
+                        trimmed.len(),
+                    );
+                    let reply = Message::with_markdown(trace_id, trimmed);
+                    self.data_plane.send("agent-core:out", reply).await?;
+                    self.history.push(ConversationEntry::assistant(trimmed));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// 处理用户消息。
     async fn handle_user_message(&mut self, msg: Message) -> SeaResult<()> {
         let text = msg.content_as_text().unwrap_or_default();
@@ -122,80 +249,8 @@ impl AgentCore {
 
         match result {
             Ok(response_text) => {
-                // 解析动作
-                let parsed = parse_actions(&response_text);
-
-                for action in &parsed.actions {
-                    match action {
-                        LlmAction::Reply { content } => {
-                            // 发送回复到 UI
-                            let reply = Message::with_markdown(
-                                msg.trace_id.clone(),
-                                content,
-                            )
-                            .reply_to(&msg.message_id);
-
-                            self.data_plane
-                                .send("agent-core:out", reply)
-                                .await?;
-
-                            // 追加 assistant 到历史
-                            self.history
-                                .push(ConversationEntry::assistant(content));
-                        }
-
-                        LlmAction::Call {
-                            target,
-                            capability,
-                            payload,
-                        } => {
-                            // 构造调用请求 → router
-                            let mut call_payload = serde_json::json!({
-                                "payload": payload,
-                            });
-                            if let Some(t) = target {
-                                call_payload["target"] = serde_json::json!(t);
-                            }
-                            if let Some(c) = capability {
-                                call_payload["capability"] = serde_json::json!(c);
-                            }
-
-                            let call_msg = Message::with_json(
-                                msg.trace_id.clone(),
-                                &call_payload,
-                            );
-
-                            self.data_plane
-                                .send("agent-core:call", call_msg)
-                                .await?;
-
-                            // 在历史中记录"已发出调用"
-                            let target_desc = target
-                                .clone()
-                                .or_else(|| capability.clone())
-                                .unwrap_or_else(|| "未知节点".to_string());
-                            self.history.push(ConversationEntry::system(&format!(
-                                "【调用子节点】已向 {target_desc} 发出调用请求，等待结果..."
-                            )));
-                        }
-
-                        LlmAction::Register { proposal } => {
-                            // 自演进提案 → admin
-                            let register_msg = Message::with_json(
-                                msg.trace_id.clone(),
-                                proposal,
-                            );
-
-                            self.data_plane
-                                .send("agent-core:register", register_msg)
-                                .await?;
-
-                            self.history.push(ConversationEntry::system(
-                                "【自演进提案】已发出，等待 admin 处理...",
-                            ));
-                        }
-                    }
-                }
+                self.process_llm_response(&response_text, msg.trace_id.clone())
+                    .await?;
             }
             Err(e) => {
                 let err_text = format!("LLM 调用失败: {e}");
@@ -222,6 +277,7 @@ impl AgentCore {
 
     /// 处理子节点返回的结果。
     async fn handle_node_result(&mut self, msg: Message) {
+        let trace_id = msg.trace_id.clone();
         let text = msg.content_as_text().unwrap_or_else(|_| {
             msg.content_as_json()
                 .map(|v| v.to_string())
@@ -247,9 +303,29 @@ impl AgentCore {
             self.history.push(result_entry);
         }
 
-        // 如果有 pending 的子节点结果，触发 LLM 继续推理（生成最终回复）
-        if let Err(e) = self.invoke_llm().await {
-            tracing::error!("[agent-core] 结果后推理失败: {e}");
+        // 触发 LLM 继续推理（基于结果生成最终回复）
+        match self.invoke_llm().await {
+            Ok(response_text) => {
+                // 解析并执行 LLM 回复中的动作（通常是 Reply，将结果反馈给用户）
+                if let Err(e) = self
+                    .process_llm_response(&response_text, trace_id.clone())
+                    .await
+                {
+                    tracing::error!(
+                        "[agent-core] 结果回复处理失败: {e}"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("[agent-core] 结果后推理失败: {e}");
+
+                // 通知 UI，避免卡在 Loading 状态
+                let err_reply = Message::with_text(
+                    trace_id,
+                    &format!("处理子节点结果时 LLM 调用失败: {e}"),
+                );
+                let _ = self.data_plane.send("agent-core:out", err_reply).await;
+            }
         }
     }
 
@@ -288,17 +364,15 @@ impl AgentCore {
             "stream": false,
         });
 
-        // 调试日志: 输出发送给 LLM 的消息
+        // 调试日志: 输出完整 LLM API payload（verbose 模式）
+        let payload_json = serde_json::to_string_pretty(&request_body)
+            .unwrap_or_else(|_| format!("{}", request_body));
         tracing::info!(
-            "[agent-core] >>> LLM 请求 | model={} | messages={} | system_prompt_len={} | history_len={}",
+            "[agent-core] >>> LLM API payload (model={}, messages={}):\n{}",
             request.model,
             request.messages.len(),
-            system_prompt.len(),
-            self.history.len(),
+            payload_json,
         );
-        // 输出 system prompt 前 800 字符（验证 api_docs 是否注入）
-        let preview: String = system_prompt.chars().take(800).collect();
-        tracing::info!("[agent-core] >>> system prompt 预览:\n{}", preview);
 
         // 调用 LLM API
         let response = self

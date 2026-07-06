@@ -30,7 +30,7 @@ system_prompt = "你是 SEA CLI 的核心助手（Supervisor）。"
 
 # ── 消息路由（内置） ──
 [node.router]
-description = "消息调度中心，根据请求中的目标和能力描述路由到子节点"
+description = "智能路由引擎，使用 LLM 分析请求并自动选择最合适的节点进行路由"
 inputs  = [{ port = "in",  format = "application/json" }]
 outputs = [{ port = "out", format = "application/json" },
            { port = "error", format = "application/json" }]
@@ -71,5 +71,6 @@ function = "registry_run"
 "admin:out"                = ["registry:in"]
 "registry:out"             = ["agent-core:result"]
 
+# 路由错误返回
 # 路由错误返回
 "router:error"             = ["agent-core:result"]
